@@ -1,0 +1,118 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        (request.auth.token.email == '210822205028@kingsedu.ac.in') ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isStaffOrAdmin() {
+      return isAdmin() || (
+        isSignedIn() &&
+        exists(/databases/$(database)/documents/staff/$(request.auth.uid))
+      );
+    }
+
+    // Health-check / connection test document
+    match /test/{testId} {
+      allow read: if true;
+      allow write: if isSignedIn();
+    }
+
+    // User Profiles
+    match /users/{userId} {
+      allow get: if isOwner(userId) || isStaffOrAdmin();
+      allow list: if isAdmin();
+      allow create: if isValidId(userId) &&
+        incoming().keys().hasAll(['id', 'name', 'role']) &&
+        incoming().name is string && incoming().name.size() <= 120 &&
+        (incoming().role == 'customer' || isAdmin());
+      allow update: if (isOwner(userId) && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'phone', 'city', 'address', 'updatedAt'])) || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Bookings
+    match /bookings/{bookingId} {
+      allow get: if isStaffOrAdmin() || (isSignedIn() && existing().userId == request.auth.uid);
+      allow list: if isStaffOrAdmin() || (isSignedIn() && resource.data.userId == request.auth.uid);
+      allow create: if isValidId(bookingId) &&
+        incoming().customerName is string && incoming().customerName.size() <= 120 &&
+        incoming().totalAmount is number &&
+        (
+          (isSignedIn() && incoming().userId == request.auth.uid) ||
+          (!isSignedIn() && incoming().userId is string && incoming().userId.size() <= 128)
+        );
+      allow update: if isStaffOrAdmin() ||
+        (isSignedIn() && existing().userId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['notes', 'specialRequests', 'updatedAt']));
+      allow delete: if isAdmin();
+    }
+
+    // Enquiries
+    match /enquiries/{enquiryId} {
+      allow create: if isValidId(enquiryId) &&
+        incoming().name is string && incoming().name.size() <= 120 &&
+        incoming().phone is string && incoming().phone.size() <= 30 &&
+        incoming().message is string && incoming().message.size() <= 2000;
+      allow get: if isStaffOrAdmin();
+      allow list: if isStaffOrAdmin();
+      allow update: if isStaffOrAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Destinations
+    match /destinations/{destinationId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Reviews
+    match /reviews/{reviewId} {
+      allow read: if true;
+      allow create: if isValidId(reviewId) &&
+        incoming().authorName is string && incoming().authorName.size() <= 120 &&
+        incoming().rating is number && incoming().rating >= 1 && incoming().rating <= 5 &&
+        incoming().comment is string && incoming().comment.size() <= 1000;
+      allow update: if (isSignedIn() && existing().userId == request.auth.uid) || isAdmin();
+      allow delete: if (isSignedIn() && existing().userId == request.auth.uid) || isAdmin();
+    }
+
+    // Notifications
+    match /notifications/{notificationId} {
+      allow get: if isSignedIn() && existing().userId == request.auth.uid;
+      allow list: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow create: if isStaffOrAdmin() || (isSignedIn() && incoming().userId == request.auth.uid);
+      allow update: if isSignedIn() && existing().userId == request.auth.uid &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['read', 'updatedAt']);
+      allow delete: if isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+    }
+  }
+}
